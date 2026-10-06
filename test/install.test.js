@@ -15,6 +15,7 @@ import {
   planUnwiring,
   planWiring,
   removeEntry,
+  stripBom,
   upsertEntry,
 } from "../tools/install.mjs";
 
@@ -62,6 +63,14 @@ test("makeBackupStamp：本機時間、格式固定、結尾不得有小數點",
   assert.equal(stamp, "20261007-034523");
   assert.doesNotMatch(stamp, /[.\-:]$/, "結尾不該有標點");
   assert.match(stamp, /^\d{8}-\d{6}$/);
+});
+
+test("stripBom：容忍 UTF-8 BOM（PowerShell 寫出的設定檔會帶）", () => {
+  assert.equal(stripBom("\uFEFF{}"), "{}");
+  assert.deepEqual(JSON.parse(stripBom('\uFEFF{"a":1}')), { a: 1 });
+  assert.equal(stripBom("{}"), "{}", "沒有 BOM 時原樣回傳");
+  assert.equal(stripBom(""), "");
+  assert.equal(stripBom(undefined), undefined);
 });
 
 test("normalizeLinkTarget：處理 Windows junction 的 \\\\?\\ 前綴與大小寫", () => {

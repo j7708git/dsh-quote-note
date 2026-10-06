@@ -77,6 +77,18 @@ export function normalizeLinkTarget(target, platform = process.platform) {
  * 備份檔名的時間戳：本機時間、`YYYYMMDD-HHMMSS`。
  * （不要用 toISOString 直接切字串——會在結尾留下小數點，Windows 上尤其難看。）
  */
+/**
+ * 去掉 UTF-8 BOM。
+ *
+ * 為什麼需要：PowerShell 5.1 的 `Set-Content -Encoding UTF8` 會寫入 BOM，而
+ * `JSON.parse` 讀到 BOM 會直接丟 `Unexpected token`。實測踩過一次——用 PowerShell
+ * 改 profile 的 package.json 會讓 DSH 整個起不來（`readProfileManifest` 在
+ * `JSON.parse` 就掛掉）。使用者手改過設定檔時也可能留下 BOM，所以讀取一律容忍。
+ */
+export function stripBom(text) {
+  return typeof text === "string" && text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
 export function makeBackupStamp(date = new Date()) {
   const p = (n) => String(n).padStart(2, "0");
   return (
@@ -176,7 +188,7 @@ const log = (json, opts, payload) => {
 };
 
 function readPkg(file) {
-  return JSON.parse(readFileSync(file, "utf8"));
+  return JSON.parse(stripBom(readFileSync(file, "utf8")));
 }
 
 function writePkg(file, pkg) {
