@@ -34,7 +34,30 @@
 
 輸入框下方靠右會出現一顆狀態 chip，回報「已附加引用（insertText／setDraft）」或失敗原因，約 6 秒後消失。
 
-## 安裝（local link）
+## 安裝
+
+### 最快：把這個 repo 丟給你的 agent
+
+對你的 coding agent 說一句：
+
+> 把這個 repo 裝進我的 DSH（我在用 DSH Desktop）
+
+它會讀 [`AGENTS.md`](./AGENTS.md) 並執行：
+
+```sh
+node tools/install.mjs --profile desktop            # 安裝
+node tools/install.mjs --verify --profile desktop   # 驗證（唯讀，0=通過／1=未通過／2=用法或環境錯）
+```
+
+你也可以自己跑同一支腳本。`--profile` 省略時會先取環境變數 `DSH_PROFILE`，再退回 `desktop`；
+想看它要做什麼而不寫任何檔，加 `--dry-run`。
+
+**裝完必須重啟該 profile**（DSH Desktop 就重啟 Desktop）—— 新 bundle 不會熱載入。
+
+腳本實際做的三件事、以及**不要**踩的坑（例如 `desktop` profile 不能用 `dsh plugin add`、
+不要對它跑 pnpm），都寫在 [`AGENTS.md`](./AGENTS.md)。
+
+### 手動（等同上面腳本做的事）
 
 本插件設計為安裝在**單一 profile**。以 `desktop` profile（DSH Desktop 應用）為例：
 
@@ -47,7 +70,7 @@
 3) 重啟 DSH Desktop
 ```
 
-**為什麼不寫 `dsh plugin --profile desktop add`：** 該 profile 由 Electron 應用獨占管理，
+**為什麼不用 `dsh plugin --profile desktop add`：** 該 profile 由 Electron 應用獨占管理，
 CLI 會直接拒絕（`error: profile "desktop" is managed exclusively by the Electron application`）。
 非 desktop 的 profile（例如 web）可以用官方指令：
 
@@ -55,9 +78,14 @@ CLI 會直接拒絕（`error: profile "desktop" is managed exclusively by the El
 dsh plugin --profile web add "<workspace-root>/dsh-quote-note"
 ```
 
-**重啟是必要的**：`dsh plugin add` 只改 profile 的 manifest 與 `node_modules`，正在跑的實例不會熱載入新 bundle。
-
 ## 移除
+
+```sh
+node tools/install.mjs --uninstall --profile desktop
+```
+
+只刪「連結本身」，不遞迴進目標目錄；`package.json` 會先備份再還原成安裝前的內容。
+手動等價步驟：
 
 ```text
 1) profile 的 package.json：從 dsh.profile.bundles 移除 "dsh-quote-note"，並移除對應的 dependencies 條目
@@ -93,9 +121,10 @@ import 套件主入口並呼叫它；缺了它整個 bundle 會在開機時失�
 ## 驗證
 
 ```sh
-npm test                                  # 單元測試（node:test，直接載入 bundle 測純函式）
-node tools/verify-served.mjs "<url含token>" # 對已啟動的實例驗證 bundle 真的被服務
-node tools/verify-client.mjs "<url含token>" # headless Edge + CDP 驗證 client 半真的會動
+npm test                                        # 單元測試（node:test，直接載入 bundle 測純函式）
+node tools/install.mjs --verify --profile <p>   # 安裝驗證（唯讀；0=通過／1=未通過／2=用法或環境錯）
+node tools/verify-served.mjs "<url含token>"      # 對已啟動的實例驗證 bundle 真的被服務
+node tools/verify-client.mjs "<url含token>"      # headless Edge + CDP 驗證 client 半真的會動
 ```
 
 `verify-client.mjs` 會在真瀏覽器裡跑完整鏈：模組物化 → 反白 → 浮出按鈕 → 開面板 → 輸入 →
@@ -124,12 +153,13 @@ DSH 仍是 developer preview，client 契約會在小版本之間漂移。本插
 
 ```text
 dsh-quote-note/
+├─ AGENTS.md             # 給別的 coding agent 的安裝／架構契約說明（「一句話裝好」的入口）
 ├─ package.json          # dsh.bundle.patch + dsh.client.platform（缺一不可）
 ├─ cordis.patch.yml      # 安裝時套用的 loader row
 ├─ index.js              # host 半（空 apply）
 ├─ client.js             # client 半：手寫 lazy-CJS bundle，零建置鏈，唯一真實來源
-├─ test/format.test.js   # 單元測試（含信封驗證與兩條寫入路徑）
-└─ tools/                # 以假 loader 載入 bundle 測純函式、兩個真機驗證腳本
+├─ test/                 # 單元測試（信封、兩條寫入路徑、installer 的冪等與路徑安全）
+└─ tools/                # install.mjs（安裝／驗證／移除）＋ 兩個真機驗證腳本
 ```
 
 `client.js` 是手寫產物，不是建置輸出；改它不需要任何 build 步驟，測試會直接載入同一份檔案

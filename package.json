@@ -1,6 +1,6 @@
 {
   "name": "dsh-quote-note",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DSH client plugin：反白選取對話中的文字 → 寫下你的想法 → 附加進主輸入框，送出時一併帶給模型。",
   "type": "module",
   "main": "index.js",
@@ -15,6 +15,7 @@
     "client.js",
     "cordis.patch.yml",
     "README.md",
+    "AGENTS.md",
     "test",
     "tools"
   ],
@@ -43,6 +44,9 @@
   ],
   "license": "MIT",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "install:plugin": "node tools/install.mjs",
+    "uninstall:plugin": "node tools/install.mjs --uninstall",
+    "verify:install": "node tools/install.mjs --verify"
   }
 }
