@@ -1,0 +1,4 @@
+# 忽略本機暫存與依賴（公開 code repo 的 .gitignore）
+node_modules/
+.tmp/
+*.log

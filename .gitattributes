@@ -1,0 +1,2 @@
+# 讓 repo 內一律 LF（Windows 上的 CRLF 警告與 diff 噪音都消失）
+* text=auto eol=lf

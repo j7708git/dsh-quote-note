@@ -1,0 +1,48 @@
+{
+  "name": "dsh-quote-note",
+  "version": "0.1.0",
+  "description": "DSH client plugin：反白選取對話中的文字 → 寫下你的想法 → 附加進主輸入框，送出時一併帶給模型。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "test",
+    "tools"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "quote",
+    "annotation",
+    "composer"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  }
+}

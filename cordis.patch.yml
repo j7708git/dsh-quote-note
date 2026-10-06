@@ -1,0 +1,14 @@
+# dsh-quote-note bundle patch
+#
+# 這一列是插進 profile 根 entry list 的 loader row。少了本檔（且 package.json 沒有
+# 宣告 dsh.bundle.patch），pnpm 裝得下去但插件不會被啟用。
+#
+# 安裝（本地路徑，會建 junction）：
+#   dsh plugin --profile desktop add "<本目錄絕對路徑>"
+# 或手動：profile 的 package.json 於 dsh.profile.bundles 加 "dsh-quote-note"，
+#         並在 profile 的 node_modules 下建立指向本目錄的目錄 junction。
+#
+# 安裝後必須「重啟該 profile」，新增 bundle 不會熱載入。
+- insert:
+    - id: dsh-quote-note
+      name: 'dsh-quote-note'
