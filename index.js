@@ -62,9 +62,25 @@ export function apply(ctx) {
 
   const disposeRoute = ctx.connection.fetch.register({
     path: ROUTE,
-    methods: ["POST"],
+    // GET 讓 client 能問「這個 session 現在還有幾則待送引用」：host 在 pre-step 消費後
+    // 數量歸零，client 就知道引用已隨訊息送出，可以把 chip 收掉。
+    methods: ["GET", "POST"],
     requestBody: "buffered",
     fetch: async (request) => {
+      if (request.method === "GET") {
+        let sessionId = null;
+        try {
+          sessionId = new URL(request.url).searchParams.get("sessionId");
+        } catch {
+          return json(400, { ok: false, reason: "bad-url" });
+        }
+        if (typeof sessionId !== "string" || sessionId.length === 0) {
+          return json(422, { ok: false, reason: "bad-session-id" });
+        }
+        const items = pending.get(sessionId);
+        return json(200, { ok: true, sessionId, count: items ? items.length : 0 });
+      }
+
       let payload;
       try {
         payload = JSON.parse(await request.text());

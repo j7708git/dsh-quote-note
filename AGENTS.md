@@ -59,8 +59,10 @@
 
 在 DSH 對話裡**反白選取文字** → 就地跳出小輸入框寫下想法 → 按「加入引用」後，
 引用**不會進主輸入框**，而是在輸入框**外**上方變成一顆小 chip（多則橫向排列）；
-hover／點 chip 會開面板顯示「引用的原文 ＋ 我的想法」，可**編輯想法**或**刪除**。
-使用者按送出時，這些引用才由 host 注入成一條額外的 context 訊息帶給模型。
+**點** chip 會開面板顯示「引用的原文 ＋ 我的想法」，可**編輯想法**或**刪除**
+（刻意不做 hover 開關：面板與 chip 之間的空隙會讓 hover 在使用者碰到面板前就關掉 —— 實際回報過的 bug）。
+使用者按送出時，這些引用才由 host 注入成一條額外的 context 訊息帶給模型；
+**送出後 chip 會自動消失**，作為「引用確實送出去了」的確認（否則使用者會以為沒送出去 —— 實際回報過）。
 
 ## 架構（兩半都有行為）
 
@@ -71,7 +73,7 @@ client 半（client.js）                        host 半（index.js）
   ↓ 加入引用                                      → 依 sessionId 保管 pending
 chip rail（conversation.input.dock）             agent/pre-step：
   · 一則一顆 chip、橫向排列                          · payload.agent.id = SessionId
-  · hover／click → 面板：原文／編輯／刪除            · 有 pending → {kind:'enter',
+  · click → 面板：原文／編輯／刪除                  · 有 pending → {kind:'enter',
   · 任何變更整份同步給 host（replace 語意）             messages:[...原訊息, 注入訊息]}
   ↓                                                · 清空該 session 的 pending
 送出 → host 在 pre-step 注入 → 模型看到 ＋ transcript 可見
@@ -103,6 +105,9 @@ chip rail（conversation.input.dock）             agent/pre-step：
 7. **host 注入必須走 `agent/pre-step`**，並且**消費後清空**該 session 的 pending
    （否則下一輪會重複注入）。注入訊息要用 `createUserMessage` 並帶自己的
    `source.kind`（`MessageSourceMap` 是可合併擴充的，沒有共用 catch-all kind）。
+   同一條 route 的 **GET** 回報待送筆數；client 靠「歸零」判斷引用已送出並收掉 chip
+   —— 這是使用者看得到的送出回饋。**只在「最後一次同步成功」時才可採信**，
+   否則同步失敗時的 0 會讓使用者的引用被默默清掉。
 8. **取用官方 API 必須做錨點解析**（見 `host-compat.js`）：本插件的實際目錄不在 profile 的
    `node_modules` 底下，直接 `import "@deepseek-ai/dsh-llm"` 會 `ERR_MODULE_NOT_FOUND`（實測）。
    全部錨點都失敗時**必須有後備**（手動建構訊息），不可讓插件整個壞掉。

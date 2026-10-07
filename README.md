@@ -22,10 +22,16 @@
 3. **寫想法** — 跳出的小輸入框可寫下針對這段文字的想法；`Ctrl/⌘+Enter` 加入、`Esc` 取消。
 4. **加入引用** — 引用變成輸入框**外**上方的一顆 chip（`💬 引用文字開頭…`）。
    多則時 chip 橫向排列、自動換行，**主輸入框始終保持乾淨**。
-5. **管理引用** — hover（或點）chip 會開面板，顯示「**引用的原文**」與可編輯的「**我的想法**」，
-   可「儲存想法」或「刪除這則」。
+   chip 與輸入框卡片**同寬同左緣**（不是貼在視窗最左邊 —— 那是實際回報過的 bug）。
+5. **管理引用** — **點** chip 開面板，顯示「**引用的原文**」與可編輯的「**我的想法**」，
+   可「儲存想法」或「刪除這則」；再點 chip、點別處或按 `Esc` 關閉。
+   存檔後面板會顯示「**已儲存 ✓**」約 2 秒（先前完全沒有回饋，使用者會以為沒反應 —— 實際回報過）。
+   （刻意**不做** hover 開關：面板與 chip 之間有空隙，滑鼠移過去會經過不屬於兩者的區域而觸發
+   `mouseleave`，面板會在使用者碰到之前就關掉 —— 實際使用回報過的 bug。）
 6. **送出** — 照常在主輸入框按送出。host 會在該回合把引用注入成一條額外的 context 訊息，
    模型與 transcript 都看得到。
+7. **送出後 chip 會自動消失** —— 這是「引用確實跟著送出去了」的確認。
+   機制：host 在 `agent/pre-step` 消費掉 pending 後筆數歸零，client 輪詢到歸零就把 chip 收掉。
 
 ## 安裝
 
@@ -91,7 +97,7 @@ client 半（client.js）                        host 半（index.js）
   ↓ 加入引用                                      → 依 sessionId 保管 pending
 chip rail（conversation.input.dock）             agent/pre-step：
   · 一則一顆 chip、橫向排列                          · payload.agent.id = SessionId
-  · hover／click → 面板：原文／編輯／刪除            · 有 pending → {kind:'enter',
+  · click → 面板：原文／編輯／刪除                  · 有 pending → {kind:'enter',
   · 任何變更整份同步給 host（replace 語意）             messages:[...原訊息, 注入訊息]}
   ↓                                                · 清空該 session 的 pending
 送出 → host 在 pre-step 注入 → 模型看到 ＋ transcript 可見
@@ -106,6 +112,7 @@ chip rail（conversation.input.dock）             agent/pre-step：
 - **client→host 傳輸**：認證的 `/api` route（`ctx.connection.fetch.register`），
   由 Connection 施加 Host/Origin 信任圍欄與瀏覽器 cookie 認證。
   **不是** `host.call` —— 那屬於動態定義套件（`cordis_define` + `harness.handle`），已安裝套件拿不到。
+  同一條 route 也支援 **GET**（回報該 session 目前的待送筆數），client 用它得知引用已被送出。
 - **送出時注入**：host 在 `agent/pre-step`（官方 waterfall，語意就是「替換進入該 step 的訊息」）
   回傳 `{kind:'enter', messages:[...原訊息, 注入訊息]}`，然後清空該 session 的 pending。
   注入訊息用官方 `createUserMessage`，並帶本插件自己的 `source.kind`（`dsh-quote-note`）與
@@ -133,12 +140,12 @@ node tools/verify-m7.mjs "<url含token>"          # headless 瀏覽器：chip ra
 
 ## 已知限制
 
-1. **hover 面板在 headless 下無法自動驗證** —— 合成滑鼠事件不觸發 React 的 `onMouseEnter`；
-   自動化測試是用「點擊」走同一條狀態路徑驗的。hover 本身請以人手確認。
-2. **送出鏈路未在活體 app 上端到端驗證** —— CDP 的自動打字打不進 Lexical 編輯器，
-   所以自動化無法完成「打字 → Enter → 檢查注入」。注入機制本身有實證
-   （`agent/pre-step` 注入的訊息確實成為 durable 的 `user/message`），host 邏輯有假 ctx 整合測試，
-   但「真人按送出」這一哩要靠使用者實測。
+1. **面板刻意不做 hover 開關** —— 面板與 chip 之間有空隙，滑鼠從 chip 移向面板時會經過
+   不屬於兩者的區域而觸發 `mouseleave`，導致面板在使用者碰到之前就關掉
+   （**實際使用回報的 bug**）。現在是「點 chip 開／關，點別處或 `Esc` 關閉」。
+2. **送出鏈路已由使用者實測驗證**（2026-10-07）：反白 → 加入引用 → 送出後，
+   模型確實收到注入的 context 區塊（引用原文 ＋ 想法）。
+   自動化仍跑不完這段（CDP 的自動打字打不進 Lexical 編輯器），但人工已驗證。
 3. **pending 只在記憶體** —— 存在 host 的 Map 裡，**重啟 DSH 後消失**；頁面重整時 client 會送一次
    空清單去清掉 host 上的殘留，避免送出時夾帶使用者已看不到的引用。
 4. **不帶來源定位** —— 引用區塊只有原文，沒有訊息 id、行號或時間戳；模型靠文字比對定位。

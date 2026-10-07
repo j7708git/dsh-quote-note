@@ -66,7 +66,7 @@ test("apply：註冊 route 與 pre-step 監聽器", () => {
   apply(ctx);
   assert.ok(ctx.routes.has("/api/dsh-quote-note/pending"), "route 應已註冊");
   const route = ctx.routes.get("/api/dsh-quote-note/pending");
-  assert.deepEqual(route.methods, ["POST"]);
+  assert.deepEqual(route.methods, ["GET", "POST"]);
   assert.equal(route.requestBody, "buffered");
   assert.equal(ctx.listeners.get("agent/pre-step")?.length, 1);
   assert.equal(ctx.effects.length, 1, "route disposer 應掛在 effect 上");
@@ -92,6 +92,31 @@ test("route：壞 payload 分別以 400／422 拒收", async () => {
   assert.equal((await postRoute(route, "not json at all")).status, 400);
   assert.equal((await postRoute(route, { items: [] })).status, 422);
   assert.equal((await postRoute(route, { sessionId: "s", items: [{ quote: " " }] })).status, 422);
+});
+
+test("route：GET 回報該 session 的待送筆數，且被 pre-step 消費後歸零", async () => {
+  const ctx = makeCtx();
+  apply(ctx);
+  const route = ctx.routes.get("/api/dsh-quote-note/pending");
+  const get = (sessionId) =>
+    route.fetch(new Request(`http://127.0.0.1/api/dsh-quote-note/pending?sessionId=${sessionId}`, { method: "GET" }));
+
+  assert.equal((await (await get("session-G")).json()).count, 0, "還沒送時應為 0");
+
+  await postRoute(route, { sessionId: "session-G", items: [{ quote: "q", note: "n" }] });
+  assert.equal((await (await get("session-G")).json()).count, 1);
+
+  // 模擬使用者送出 → host 在 pre-step 消費掉
+  await runPreStep(ctx, "session-G");
+  assert.equal((await (await get("session-G")).json()).count, 0, "被消費後應歸零（client 據此收掉 chip）");
+});
+
+test("route：GET 缺 sessionId → 422", async () => {
+  const ctx = makeCtx();
+  apply(ctx);
+  const route = ctx.routes.get("/api/dsh-quote-note/pending");
+  const res = await route.fetch(new Request("http://127.0.0.1/api/dsh-quote-note/pending", { method: "GET" }));
+  assert.equal(res.status, 422);
 });
 
 test("pre-step：有 pending → 注入一條 user 訊息，且原本的訊息保留在後面", async () => {

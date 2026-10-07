@@ -39,7 +39,7 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
         lastReject: null,
         inserts: [],
         errors: [],
-        pending: { adds: 0, syncs: 0, syncFailures: 0, items: 0 },
+        pending: { adds: 0, syncs: 0, syncFailures: 0, items: 0, clearedAfterSend: 0 },
       };
       if (typeof window !== "undefined") window.__dshQuoteNote = diag;
 
@@ -247,6 +247,9 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
       })();
 
       function resultText(result) {
+        if (result.ok && result.via === "sent") {
+          return "引用已隨訊息送出（" + result.count + " 則）";
+        }
         if (result.ok) {
           return "已附加引用（" + result.via + "）";
         }
@@ -575,11 +578,32 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
         return t.slice(0, CHIP_PREVIEW_CHARS) + "…";
       }
 
+      /**
+       * 問 host：這個 session 現在還有幾則待送引用。
+       * host 在 pre-step 消費後數量會歸零 → 代表引用已隨訊息送出。
+       */
+      async function fetchHostCount(sessionId) {
+        if (!sessionId) return null;
+        try {
+          var res = await fetch(PENDING_ROUTE + "?sessionId=" + encodeURIComponent(sessionId), {
+            method: "GET",
+            credentials: "same-origin",
+          });
+          if (!res.ok) return null;
+          var body = await res.json();
+          return typeof body.count === "number" ? body.count : null;
+        } catch (error) {
+          return null;
+        }
+      }
+
       var pendingStore = (function () {
         var bySession = Object.create(null);
         var activeSession = null;
         var listeners = [];
         var seq = 0;
+        /** 最後一次同步是否成功 —— 只有成功時「host 數量為 0」才可信。 */
+        var lastSyncOk = false;
 
         function emit() {
           listeners.slice().forEach(function (fn) {
@@ -610,11 +634,14 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
             });
             if (!res.ok) {
               diag.pending.syncFailures += 1;
+              lastSyncOk = false;
               return { ok: false, message: "host 回應 HTTP " + res.status };
             }
+            lastSyncOk = true;
             return { ok: true };
           } catch (error) {
             diag.pending.syncFailures += 1;
+            lastSyncOk = false;
             return { ok: false, message: String((error && error.message) || error) };
           }
         }
@@ -637,6 +664,23 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
           /** 掛載或任何變更後，把現況整份同步給 host。 */
           sync: function (sessionId) {
             return sync(sessionId || activeSession);
+          },
+          /** 最後一次同步是否成功。 */
+          syncOk: function () {
+            return lastSyncOk;
+          },
+          /**
+           * host 已消費掉 pending（＝引用已隨訊息送出）：收掉本地 chip，
+           * 並且**不再**回寫 host（那會把剛送出的狀態又寫回去）。
+           */
+          clearAfterSend: function (sessionId) {
+            var items = list(sessionId);
+            if (!items.length) return 0;
+            bySession[sessionId] = [];
+            diag.pending.clearedAfterSend += 1;
+            emit();
+            bus.emit({ ok: true, via: "sent", count: items.length });
+            return items.length;
           },
           /**
            * 新增一則引用。同步失敗時**降級**為舊行為（插進主輸入框），
@@ -700,6 +744,9 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
         var errState = React.useState(null);
         var err = errState[0];
         var setErr = errState[1];
+        var savedState = React.useState(null);
+        var saved = savedState[0];
+        var setSaved = savedState[1];
 
         React.useEffect(
           function () {
@@ -724,9 +771,69 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
           [sessionId]
         );
 
+        // 面板開著時：點面板以外的地方、或按 Esc 就關閉。
+        React.useEffect(
+          function () {
+            if (!open) return undefined;
+            function onDown(event) {
+              var target = event.target;
+              if (target && typeof target.closest === "function" && target.closest('[data-dsh-quote-note="chip-wrap"]')) return;
+              setOpen(null);
+            }
+            function onKey(event) {
+              if (event.key === "Escape") setOpen(null);
+            }
+            document.addEventListener("mousedown", onDown, true);
+            document.addEventListener("keydown", onKey, true);
+            return function () {
+              document.removeEventListener("mousedown", onDown, true);
+              document.removeEventListener("keydown", onKey, true);
+            };
+          },
+          [open]
+        );
+
+        // 「已儲存」提示 2 秒後自動消失。
+        React.useEffect(
+          function () {
+            if (!saved) return undefined;
+            var timer = setTimeout(function () {
+              setSaved(null);
+            }, 2000);
+            return function () {
+              clearTimeout(timer);
+            };
+          },
+          [saved]
+        );
+
         var items = pendingStore.list(sessionId);
         diag.pending.items = items.length;
         diag.pending.sessionId = sessionId;
+
+        // 引用隨訊息送出後，host 會在 pre-step 把它消費掉（數量歸零）。
+        // 輪詢到歸零就把 chip 收掉 —— 使用者才知道「有被送出」
+        // （實際使用回報：chip 一直留著，會以為標記的內容沒跟著送出去）。
+        React.useEffect(
+          function () {
+            if (!items.length) return undefined;
+            var stopped = false;
+            var timer = setInterval(function () {
+              // 只有「最後一次同步成功」時，「host 數量為 0」才代表被消費；
+              // 否則那可能只是同步失敗，不能拿來清掉使用者的引用。
+              if (!pendingStore.syncOk()) return;
+              fetchHostCount(sessionId).then(function (count) {
+                if (stopped || count === null) return;
+                if (count === 0) pendingStore.clearAfterSend(sessionId);
+              });
+            }, 1500);
+            return function () {
+              stopped = true;
+              clearInterval(timer);
+            };
+          },
+          [items.length, sessionId]
+        );
 
         if (!items.length && !err) return null;
 
@@ -739,7 +846,20 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
           "div",
           {
             "data-dsh-quote-note": "rail",
-            style: { display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: "6px", padding: "2px 0" },
+            style: {
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "flex-start",
+              gap: "6px",
+              padding: "2px 0",
+              // 與輸入框卡片對齊：conversation.input.dock 是整條寬的容器，不這樣做的話
+              // chip 會貼在視窗最左邊、跟置中的輸入框對不上（實際使用回報「位置有點怪」）。
+              // 寬度沿用 composer 自己的變數，找不到時退回聊天內容寬度。
+              boxSizing: "border-box",
+              width: "100%",
+              maxWidth: "var(--dsh-composer-card-max-width, var(--dsh-chat-content-width, 748px))",
+              margin: "0 auto",
+            },
           },
           items.map(function (it) {
             var isOpen = open === it.id;
@@ -748,15 +868,9 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
               {
                 key: it.id,
                 "data-dsh-quote-note": "chip-wrap",
-                onMouseEnter: function () {
-                  setOpen(it.id);
-                  setNote(it.note);
-                },
-                onMouseLeave: function () {
-                  setOpen(function (cur) {
-                    return cur === it.id ? null : cur;
-                  });
-                },
+                // 刻意**不做** hover 開關：面板與 chip 之間有空隙，滑鼠移過去會經過
+                // 不屬於兩者的區域而觸發 mouseleave，導致面板在使用者碰到之前就關掉
+                // （實際使用回報的 bug）。改為點擊開關，並用 outside-click／Esc 關閉。
                 style: { position: "relative" },
               },
               h(
@@ -777,8 +891,8 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
                     borderRadius: "999px",
                     cursor: "pointer",
                     background: T.bg,
-                    color: T.fg2,
-                    border: "1px solid " + T.border,
+                    color: isOpen ? T.fg : T.fg2,
+                    border: "1px solid " + (isOpen ? T.brand : T.border),
                     whiteSpace: "nowrap",
                     maxWidth: "220px",
                     overflow: "hidden",
@@ -794,7 +908,8 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
                       "data-dsh-quote-note": "chip-panel",
                       style: {
                         position: "absolute",
-                        top: "calc(100% + 6px)",
+                        // 開在 chip **上方**：rail 位於輸入框上方，往下開會蓋住輸入框。
+                        bottom: "calc(100% + 6px)",
                         left: "0",
                         zIndex: 2147483000,
                         width: "340px",
@@ -859,7 +974,13 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
                           "data-dsh-quote-note": "chip-save",
                           type: "button",
                           onClick: function () {
-                            pendingStore.updateNote(it.id, note).then(applyResult);
+                            setSaved(null);
+                            pendingStore.updateNote(it.id, note).then(function (result) {
+                              applyResult(result);
+                              // 內容其實存得起來，但先前沒有任何回饋，使用者以為沒反應
+                              // （實際使用回報）。這裡給一個短暫的確認。
+                              if (!result || result.ok !== false) setSaved({ itemId: it.id, text: "已儲存 ✓" });
+                            });
                           },
                           style: {
                             font: "inherit",
@@ -895,7 +1016,14 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
                           },
                         },
                         "刪除這則"
-                      )
+                      ),
+                      saved && saved.itemId === it.id
+                        ? h(
+                            "span",
+                            { "data-dsh-quote-note": "chip-saved", style: { fontSize: "11px", color: T.fg2 } },
+                            saved.text
+                          )
+                        : null
                     )
                   )
                 : null

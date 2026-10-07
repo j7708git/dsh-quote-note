@@ -245,6 +245,46 @@ try {
   const chipAppeared = await waitFor(`Boolean(document.querySelector('[data-dsh-quote-note="rail"] [data-dsh-quote-note="chip"]'))`, "chip", 20, 300);
   check("chip 出現在輸入框外（rail）", chipAppeared);
 
+  /* chip 要跟輸入框卡片對齊，不是貼在整條 dock 的最左邊（實際使用回報「位置有點怪」） */
+  if (chipAppeared) {
+    const align = await evaluate(`(() => {
+      const rail = document.querySelector('[data-dsh-quote-note="rail"]');
+      const ed = document.querySelector('[contenteditable="true"]');
+      if (!rail || !ed) return null;
+      return {
+        railLeft: Math.round(rail.getBoundingClientRect().left),
+        edLeft: Math.round(ed.getBoundingClientRect().left),
+      };
+    })()`);
+    check(
+      "chip rail 與輸入框對齊",
+      Boolean(align) && Math.abs(align.railLeft - align.edLeft) <= 60,
+      align ? `rail.left=${align.railLeft} editor.left=${align.edLeft}（差 ${Math.abs(align.railLeft - align.edLeft)}px）` : "量不到"
+    );
+
+    // 回答「跟任務清單（TodoDock）會不會重疊」：看 dock 容器的實際 flex 佈局與兄弟數量。
+    const dockInfo = await evaluate(`(() => {
+      const rail = document.querySelector('[data-dsh-quote-note="rail"]');
+      if (!rail) return null;
+      const chain = [];
+      let p = rail.parentElement;
+      for (let i = 0; i < 3 && p; i++, p = p.parentElement) {
+        const cs = getComputedStyle(p);
+        chain.push({
+          tag: p.tagName,
+          cls: String(p.className || '').slice(0, 30),
+          display: cs.display,
+          dir: cs.flexDirection,
+          justify: cs.justifyContent,
+          wrap: cs.flexWrap,
+          children: p.children.length,
+        });
+      }
+      return chain;
+    })()`);
+    console.log(`-- dock 容器鏈: ${JSON.stringify(dockInfo)}`);
+  }
+
   /* 核心斷言：主輸入框保持空白 */
   const draft = await evaluate(`(() => {
     const ed = document.querySelector('[contenteditable="true"]');
@@ -256,33 +296,16 @@ try {
     draft === null ? "找不到 composer 編輯器（無法判定）" : `draft=${JSON.stringify(draft)}`
   );
 
-  /* hover chip → 面板 */
+  /* 點 chip → 面板（刻意不做 hover：面板與 chip 之間的空隙會讓 hover 在使用者碰到
+     面板前就觸發 mouseleave，實際使用回報過這個 bug） */
   let hoverPanel = false;
   let hoverVia = null;
   if (chipAppeared) {
-    const rect = await evaluate(`(() => {
-      const el = document.querySelector('[data-dsh-quote-note="rail"] [data-dsh-quote-note="chip"]');
-      const r = el.getBoundingClientRect();
-      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-    })()`);
-    if (rect) {
-      // 先把指標移到遠處再移到 chip：單一次 mouseMoved 不一定會產生 mouseover。
-      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4, buttons: 0 });
-      await sleep(150);
-      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: rect.x, y: rect.y, buttons: 0 });
-      await sleep(150);
-      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: rect.x + 1, y: rect.y + 1, buttons: 0 });
-      hoverPanel = await waitFor(`Boolean(document.querySelector('[data-dsh-quote-note="chip-panel"]'))`, "hover-panel", 12, 250);
-      hoverVia = hoverPanel ? "hover" : null;
-      if (!hoverPanel) {
-        // 點擊走同一條狀態路徑；hover 若在 headless 下不觸發，至少驗證面板本身可用。
-        await evaluate(`document.querySelector('[data-dsh-quote-note="rail"] [data-dsh-quote-note="chip"]').click()`);
-        hoverPanel = await waitFor(`Boolean(document.querySelector('[data-dsh-quote-note="chip-panel"]'))`, "click-panel", 12, 250);
-        hoverVia = hoverPanel ? "click" : null;
-      }
-    }
+    await evaluate(`document.querySelector('[data-dsh-quote-note="rail"] [data-dsh-quote-note="chip"]').click()`);
+    hoverPanel = await waitFor(`Boolean(document.querySelector('[data-dsh-quote-note="chip-panel"]'))`, "click-panel", 15, 250);
+    hoverVia = hoverPanel ? "click" : null;
   }
-  check("chip 面板可開啟（hover 優先，否則 click）", hoverPanel, hoverVia ? `經由 ${hoverVia}` : "兩種都沒開");
+  check("點 chip 開啟面板", hoverPanel, hoverVia ? `經由 ${hoverVia}` : "沒開");
 
   const panelContent = hoverPanel
     ? await evaluate(`(() => {
@@ -314,6 +337,11 @@ try {
   }
   check("編輯想法並儲存（有觸發同步）", editOk);
 
+  const savedFeedback = await evaluate(
+    `(() => { const el = document.querySelector('[data-dsh-quote-note="chip-saved"]'); return el ? el.textContent : null; })()`
+  );
+  check("儲存後有視覺回饋（已儲存）", Boolean(savedFeedback), savedFeedback ?? "沒有回饋元素");
+
   /* 刪除 → chip 消失 */
   let removed = false;
   if (hoverPanel) {
@@ -327,6 +355,33 @@ try {
   check("刪除後 chip 消失、rail 不再佔位", removed);
 
   const finalDiag = await evaluate("window.__dshQuoteNote || null");
+
+  /* 送出後 chip 應自動消失：模擬 host 在 pre-step 消費掉 pending（真實送出時就是這樣清的） */
+  await evaluate(makeSelection);
+  await waitFor(`Boolean(document.querySelector('[data-dsh-quote-note="button"]'))`, "button3", 15, 400);
+  await evaluate(`document.querySelector('[data-dsh-quote-note="button"]').click()`);
+  await waitFor(`Boolean(document.querySelector('[data-dsh-quote-note="panel"]'))`, "panel3", 15, 300);
+  await evaluate(`(() => {
+    const ta = document.querySelector('[data-dsh-quote-note="textarea"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(ta, '送出後應該消失');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    const b = Array.from(document.querySelectorAll('[data-dsh-quote-note="panel"] button')).find((x) => (x.textContent || '').includes('加入引用'));
+    if (b) b.click();
+    return true;
+  })()`);
+  const chip3 = await waitFor(`Boolean(document.querySelector('[data-dsh-quote-note="rail"] [data-dsh-quote-note="chip"]'))`, "chip3", 20, 300);
+  check("再次掛上一則引用（準備驗證送出後消失）", chip3);
+
+  if (chip3) {
+    const sid = await evaluate("window.__dshQuoteNote && window.__dshQuoteNote.pending.sessionId");
+    await evaluate(
+      `fetch('/api/dsh-quote-note/pending', { method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ sessionId: ${JSON.stringify(sid)}, items: [] }) }).then((r) => r.status)`
+    );
+    const cleared = await waitFor(`!document.querySelector('[data-dsh-quote-note="rail"]')`, "cleared-after-send", 24, 500);
+    const clearedDiag = await evaluate("window.__dshQuoteNote && window.__dshQuoteNote.pending.clearedAfterSend");
+    check("host 消費後 chip 自動消失（＝看得出已送出）", cleared, `clearedAfterSend=${clearedDiag}`);
+  }
   console.log(
     `\n-- diag: adds=${finalDiag?.pending?.adds} syncs=${finalDiag?.pending?.syncs} syncFailures=${finalDiag?.pending?.syncFailures} sessionId=${finalDiag?.pending?.sessionId}`
   );

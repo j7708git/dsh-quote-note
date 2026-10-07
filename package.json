@@ -1,6 +1,6 @@
 {
   "name": "dsh-quote-note",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "DSH plugin：反白選取對話中的文字 → 在輸入框外掛成引用 chip → 送出時由 host 注入成一條 context 訊息帶給模型。",
   "type": "module",
   "main": "index.js",
