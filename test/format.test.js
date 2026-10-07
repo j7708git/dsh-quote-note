@@ -8,7 +8,7 @@ import test from "node:test";
 import { loadClient } from "../tools/load-client.mjs";
 
 const { id, exports: plugin } = loadClient();
-const { normalizeQuote, formatQuoteBlock, composeDraftText, insertIntoComposer } = plugin.__pure;
+const { normalizeQuote, formatQuoteBlock, composeDraftText, insertIntoComposer, previewText } = plugin.__pure;
 
 test("信封：id 等於套件名，且匯出 apply/inject", () => {
   assert.equal(id, "dsh-quote-note");
@@ -52,6 +52,13 @@ test("composeDraftText：不覆蓋已打的字，接在後面", () => {
   assert.equal(composeDraftText("", "區塊"), "區塊");
   assert.equal(composeDraftText("   ", "區塊"), "區塊");
   assert.equal(composeDraftText("原稿", ""), "原稿");
+});
+
+test("previewText：chip 標籤取前 14 字並收斂換行", () => {
+  assert.equal(previewText("短句"), "短句");
+  assert.equal(previewText("多行\n引用"), "多行 引用");
+  assert.equal(previewText("這是一段很長的引用文字內容測試用"), "這是一段很長的引用文字內容測…");
+  assert.equal(previewText(""), "");
 });
 
 /* ── 寫入 composer 的兩條路 ─────────────────────────────────────────────── */

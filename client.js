@@ -33,12 +33,13 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
       var diag = {
         applied: false,
         inject: { requested: [], registered: [] },
-        mounted: { floating: 0, bridge: 0 },
+        mounted: { floating: 0, bridge: 0, rail: 0 },
         syncs: 0,
         lastPick: null,
         lastReject: null,
         inserts: [],
         errors: [],
+        pending: { adds: 0, syncs: 0, syncFailures: 0, items: 0 },
       };
       if (typeof window !== "undefined") window.__dshQuoteNote = diag;
 
@@ -328,18 +329,19 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
           setPick(readSelection());
         }
 
-        function confirm() {
+        async function confirm() {
           if (!editing) return;
-          var block = formatQuoteBlock(editing.text, note);
-          if (!block) {
+          var quote = editing.text;
+          var text = typeof note === "string" ? note.trim() : "";
+          if (!normalizeQuote(quote) && !text) {
             setMsg("沒有可附加的內容");
             return;
           }
-          var result = bus.insert(block);
-          if (result.ok) {
+          var outcome = await pendingStore.add(quote, text);
+          if (outcome.ok) {
             closeEditor();
           } else {
-            setMsg(resultText(result));
+            setMsg(outcome.message);
           }
         }
 
@@ -419,7 +421,7 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
             h(
               "div",
               { style: { display: "flex", alignItems: "center", gap: "8px" } },
-              h("span", { style: { flex: "1", fontSize: "11px", color: T.fg3 } }, "Ctrl/⌘+Enter 附加 · Esc 取消"),
+              h("span", { style: { flex: "1", fontSize: "11px", color: T.fg3 } }, "Ctrl/⌘+Enter 加入 · Esc 取消"),
               h(
                 "button",
                 {
@@ -454,7 +456,7 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
                     border: "1px solid " + T.brand,
                   },
                 },
-                "附加到輸入框"
+                "加入引用"
               )
             )
           );
@@ -468,7 +470,7 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
           {
             "data-dsh-quote-note": "button",
             type: "button",
-            title: "為這段反白文字加想法，附加到主輸入框",
+            title: "為這段反白文字加想法，掛成輸入框外的引用 chip",
             onMouseDown: function (event) {
               event.preventDefault();
             },
@@ -538,7 +540,7 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
         return h(
           "span",
           {
-            "data-dsh-quote-note": "chip",
+            "data-dsh-quote-note": "status-chip",
             title: status,
             style: {
               fontSize: "11px",
@@ -553,6 +555,353 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
             },
           },
           status
+        );
+      }
+
+      /* ══ 待送引用：chip rail（輸入框外）══════════════════════════════════
+       *
+       * 引用不進主輸入框，改為掛在 host 的 pending（送出時由 host 在
+       * agent/pre-step 注入成一條 durable context 訊息）。chip 只是它的視圖。
+       * ══════════════════════════════════════════════════════════════════ */
+
+      var PENDING_ROUTE = "/api/dsh-quote-note/pending";
+      var MAX_ITEMS = 20;
+      var CHIP_PREVIEW_CHARS = 14;
+
+      /** chip 上顯示的短標籤。 */
+      function previewText(quote) {
+        var t = normalizeQuote(quote).replace(/\n+/g, " ");
+        if (t.length <= CHIP_PREVIEW_CHARS) return t;
+        return t.slice(0, CHIP_PREVIEW_CHARS) + "…";
+      }
+
+      var pendingStore = (function () {
+        var bySession = Object.create(null);
+        var activeSession = null;
+        var listeners = [];
+        var seq = 0;
+
+        function emit() {
+          listeners.slice().forEach(function (fn) {
+            try {
+              fn();
+            } catch (e) {
+              /* 監聽者壞掉不影響其他人 */
+            }
+          });
+        }
+        function list(sessionId) {
+          return bySession[sessionId] || [];
+        }
+
+        /** 把某個 session 的現況整份送到 host（replace 語意，冪等）。 */
+        async function sync(sessionId) {
+          if (!sessionId) return { ok: false, message: "沒有 session" };
+          var items = list(sessionId).map(function (it) {
+            return { quote: it.quote, note: it.note };
+          });
+          diag.pending.syncs += 1;
+          try {
+            var res = await fetch(PENDING_ROUTE, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              credentials: "same-origin",
+              body: JSON.stringify({ sessionId: sessionId, items: items }),
+            });
+            if (!res.ok) {
+              diag.pending.syncFailures += 1;
+              return { ok: false, message: "host 回應 HTTP " + res.status };
+            }
+            return { ok: true };
+          } catch (error) {
+            diag.pending.syncFailures += 1;
+            return { ok: false, message: String((error && error.message) || error) };
+          }
+        }
+
+        return {
+          subscribe: function (fn) {
+            listeners.push(fn);
+            return function () {
+              var i = listeners.indexOf(fn);
+              if (i >= 0) listeners.splice(i, 1);
+            };
+          },
+          setActiveSession: function (sessionId) {
+            activeSession = sessionId || null;
+            emit();
+          },
+          list: function (sessionId) {
+            return list(sessionId || activeSession);
+          },
+          /** 掛載或任何變更後，把現況整份同步給 host。 */
+          sync: function (sessionId) {
+            return sync(sessionId || activeSession);
+          },
+          /**
+           * 新增一則引用。同步失敗時**降級**為舊行為（插進主輸入框），
+           * 以免內容默默丟掉 —— 這是 host route 不可用時的後備路徑。
+           */
+          add: async function (quote, note) {
+            var sessionId = activeSession;
+            if (!sessionId) return { ok: false, message: "還沒有 session：請先開啟一個對話" };
+            var items = list(sessionId).slice();
+            if (items.length >= MAX_ITEMS) return { ok: false, message: "一次最多 " + MAX_ITEMS + " 則引用" };
+            var item = { id: PLUGIN + "-" + Date.now() + "-" + ++seq, quote: quote, note: note };
+            items.push(item);
+            bySession[sessionId] = items;
+            diag.pending.adds += 1;
+            emit();
+
+            var result = await sync(sessionId);
+            if (result.ok) return { ok: true };
+
+            var fallback = bus.insert(formatQuoteBlock(quote, note));
+            bySession[sessionId] = list(sessionId).filter(function (it) {
+              return it.id !== item.id;
+            });
+            emit();
+            if (fallback.ok) {
+              return { ok: true, degraded: true, message: "host 不可用，已改為直接插入輸入框" };
+            }
+            return { ok: false, message: "引用無法送出（" + result.message + "），插入輸入框也失敗" };
+          },
+          updateNote: async function (itemId, note) {
+            var sessionId = activeSession;
+            bySession[sessionId] = list(sessionId).map(function (it) {
+              return it.id === itemId ? { id: it.id, quote: it.quote, note: note } : it;
+            });
+            emit();
+            return sync(sessionId);
+          },
+          remove: async function (itemId) {
+            var sessionId = activeSession;
+            bySession[sessionId] = list(sessionId).filter(function (it) {
+              return it.id !== itemId;
+            });
+            emit();
+            return sync(sessionId);
+          },
+        };
+      })();
+
+      /* ── chip rail：掛在 conversation.input.dock（輸入框外的官方座位） ───── */
+
+      function ChipRail(props) {
+        var sessionId = (props && props.session && props.session.id) || (props && props.sessionId) || null;
+        var forceState = React.useState(0);
+        var force = forceState[1];
+        var openState = React.useState(null);
+        var open = openState[0];
+        var setOpen = openState[1];
+        var noteState = React.useState("");
+        var note = noteState[0];
+        var setNote = noteState[1];
+        var errState = React.useState(null);
+        var err = errState[0];
+        var setErr = errState[1];
+
+        React.useEffect(
+          function () {
+            pendingStore.setActiveSession(sessionId);
+            diag.mounted.rail += 1;
+            var off = pendingStore.subscribe(function () {
+              force(function (n) {
+                return n + 1;
+              });
+            });
+            // 掛載時把「客戶端現況」整份同步給 host：頁面重整後 chip 是空的，
+            // 這次同步會清掉 host 上殘留的舊引用（避免送出時夾帶使用者已看不到的東西）。
+            pendingStore.sync(sessionId).then(function (r) {
+              if (r && r.ok === false) setErr("與 host 同步失敗：" + r.message);
+              else setErr(null);
+            });
+            return function () {
+              diag.mounted.rail -= 1;
+              off();
+            };
+          },
+          [sessionId]
+        );
+
+        var items = pendingStore.list(sessionId);
+        diag.pending.items = items.length;
+        diag.pending.sessionId = sessionId;
+
+        if (!items.length && !err) return null;
+
+        function applyResult(result) {
+          if (result && result.ok === false) setErr(result.message);
+          else setErr(null);
+        }
+
+        return h(
+          "div",
+          {
+            "data-dsh-quote-note": "rail",
+            style: { display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: "6px", padding: "2px 0" },
+          },
+          items.map(function (it) {
+            var isOpen = open === it.id;
+            return h(
+              "div",
+              {
+                key: it.id,
+                "data-dsh-quote-note": "chip-wrap",
+                onMouseEnter: function () {
+                  setOpen(it.id);
+                  setNote(it.note);
+                },
+                onMouseLeave: function () {
+                  setOpen(function (cur) {
+                    return cur === it.id ? null : cur;
+                  });
+                },
+                style: { position: "relative" },
+              },
+              h(
+                "button",
+                {
+                  "data-dsh-quote-note": "chip",
+                  type: "button",
+                  title: it.note ? "想法：" + it.note : "（沒有寫想法）",
+                  onClick: function () {
+                    setOpen(isOpen ? null : it.id);
+                    setNote(it.note);
+                  },
+                  style: {
+                    font: "inherit",
+                    fontSize: "12px",
+                    lineHeight: "1",
+                    padding: "5px 9px",
+                    borderRadius: "999px",
+                    cursor: "pointer",
+                    background: T.bg,
+                    color: T.fg2,
+                    border: "1px solid " + T.border,
+                    whiteSpace: "nowrap",
+                    maxWidth: "220px",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  },
+                },
+                "💬 " + (previewText(it.quote) || "（未命名引用）")
+              ),
+              isOpen
+                ? h(
+                    "div",
+                    {
+                      "data-dsh-quote-note": "chip-panel",
+                      style: {
+                        position: "absolute",
+                        top: "calc(100% + 6px)",
+                        left: "0",
+                        zIndex: 2147483000,
+                        width: "340px",
+                        boxSizing: "border-box",
+                        background: T.bg,
+                        color: T.fg,
+                        border: "1px solid " + T.border,
+                        borderRadius: "10px",
+                        boxShadow: T.shadow,
+                        padding: "10px",
+                        fontSize: "12px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "8px",
+                      },
+                    },
+                    h("div", { style: { color: T.fg3, fontSize: "11px" } }, "引用的原文"),
+                    h(
+                      "div",
+                      {
+                        "data-dsh-quote-note": "chip-quote",
+                        style: {
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                          maxHeight: "120px",
+                          overflowY: "auto",
+                          borderLeft: "3px solid " + T.border,
+                          paddingLeft: "8px",
+                          color: T.fg2,
+                        },
+                      },
+                      normalizeQuote(it.quote)
+                    ),
+                    h("div", { style: { color: T.fg3, fontSize: "11px" } }, "我的想法"),
+                    h("textarea", {
+                      "data-dsh-quote-note": "chip-note",
+                      value: note,
+                      placeholder: "針對這段文字，你想說什麼？",
+                      onChange: function (event) {
+                        setNote(event.target.value);
+                      },
+                      style: {
+                        minHeight: "56px",
+                        resize: "vertical",
+                        boxSizing: "border-box",
+                        background: "transparent",
+                        color: T.fg,
+                        border: "1px solid " + T.border,
+                        borderRadius: "8px",
+                        padding: "6px 8px",
+                        font: "inherit",
+                        fontSize: "12px",
+                        outline: "none",
+                      },
+                    }),
+                    h(
+                      "div",
+                      { style: { display: "flex", gap: "8px", alignItems: "center" } },
+                      h(
+                        "button",
+                        {
+                          "data-dsh-quote-note": "chip-save",
+                          type: "button",
+                          onClick: function () {
+                            pendingStore.updateNote(it.id, note).then(applyResult);
+                          },
+                          style: {
+                            font: "inherit",
+                            fontSize: "12px",
+                            padding: "4px 10px",
+                            borderRadius: "8px",
+                            cursor: "pointer",
+                            background: "transparent",
+                            color: T.brand,
+                            border: "1px solid " + T.brand,
+                          },
+                        },
+                        "儲存想法"
+                      ),
+                      h(
+                        "button",
+                        {
+                          "data-dsh-quote-note": "chip-remove",
+                          type: "button",
+                          onClick: function () {
+                            pendingStore.remove(it.id).then(applyResult);
+                            setOpen(null);
+                          },
+                          style: {
+                            font: "inherit",
+                            fontSize: "12px",
+                            padding: "4px 10px",
+                            borderRadius: "8px",
+                            cursor: "pointer",
+                            background: "transparent",
+                            color: T.err,
+                            border: "1px solid " + T.border,
+                          },
+                        },
+                        "刪除這則"
+                      )
+                    )
+                  )
+                : null
+            );
+          }),
+          err ? h("span", { "data-dsh-quote-note": "rail-error", style: { fontSize: "11px", color: T.err } }, err) : null
         );
       }
 
@@ -594,6 +943,14 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
           console.error("[" + PLUGIN + "] 無法註冊 conversation.input.right", error);
         }
 
+        // 引用 chip 的座位：輸入框**外**上方（官方 TodoDock／QueueDock 用的同一個 list slot）。
+        try {
+          registerSlot(ctx, "conversation.input.dock", ChipRail, { id: PLUGIN + ":rail", order: 10 });
+          registered.push("conversation.input.dock");
+        } catch (error) {
+          console.error("[" + PLUGIN + "] 無法註冊 conversation.input.dock", error);
+        }
+
         console.log("[" + PLUGIN + "] client half applied", { slots: registered });
         diag.applied = true;
       }
@@ -610,6 +967,7 @@ if (typeof window !== "undefined" && window.__ModuleLoader__ && typeof window.__
         composeDraftText: composeDraftText,
         insertIntoComposer: insertIntoComposer,
         readSelection: readSelection,
+        previewText: previewText,
       };
       return module.exports;
     },
